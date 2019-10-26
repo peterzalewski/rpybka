@@ -2,35 +2,34 @@ import select
 import socket
 
 
-def receive_all(conn, receive_size=4096, timeout=1):
-  message = []
-  while True:
-    ready, _, _ = select.select([conn], [], [], timeout)
-    if not ready:
-      break
-    data = ready[0].recv(receive_size)
-    message.append(data)
-
-  return b''.join(message)
-
-
 def run(port=80):
-  with socket.socket(family=socket.AF_INET, type=socket.SOCK_STREAM) as s:
-    s.bind(('', port))
-    s.listen()
+  connected_clients = {}
+
+  with socket.socket(family=socket.AF_INET, type=socket.SOCK_STREAM) as server:
+    server.bind(('', port))
+    server.listen()
 
     while True:
-      try:
-        conn, address = s.accept()
-      except KeyboardInterrupt:
-        break
+      read_ready = [server] + list(connected_clients.keys())
+      readable, _, unusual = select.select(read_ready, [], read_ready, 1)
 
-      try:
-        request = receive_all(conn)
-        print(request)
-      finally:
-        conn.shutdown(socket.SHUT_RDWR)
-        conn.close()
+      for client in readable:
+        if client is server:
+          new_connection, address = server.accept()
+          new_connection.setblocking(False)
+          connected_clients[new_connection] = []
+          print(f'client connected from {address[0]}:{address[1]}')
+        else:
+          data = client.recv(4096)
+          if data:
+            connected_clients[client].append(data)
+            print(f'received data from {client!r}: {data!s}')
+
+      for client in unusual:
+        print(f'closed connection to {client!r}')
+        client.shutdown(socket.SHUT_RDRW)
+        client.close()
+        del connected_clients[client]
   
 
 if __name__ == '__main__':
