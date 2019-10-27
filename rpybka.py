@@ -6,6 +6,7 @@ def run(port=80):
   connected_clients = {}
 
   with socket.socket(family=socket.AF_INET, type=socket.SOCK_STREAM) as server:
+    server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     server.bind(('', port))
     server.listen()
 
