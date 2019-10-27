@@ -2,6 +2,12 @@ import select
 import socket
 
 
+def pretty_print_socket(connection):
+  assert(connection)
+  ip_address, port = connection.getpeername()
+  return f'<{ip_address}:{port}>'
+
+
 def run(port=80):
   connected_clients = {}
 
@@ -19,15 +25,15 @@ def run(port=80):
           new_connection, address = server.accept()
           new_connection.setblocking(False)
           connected_clients[new_connection] = []
-          print(f'client connected from {address[0]}:{address[1]}')
+          print(f'client connected from {pretty_print_socket(new_connection)}')
         else:
           data = client.recv(4096)
           if data:
             connected_clients[client].append(data)
-            print(f'received data from {client!r}: {data!s}')
+            print(f'received data from {pretty_print_socket(new_connection)}: {data!s}')
 
       for client in unusual:
-        print(f'closed connection to {client!r}')
+        print(f'closed connection to {pretty_print_socket(new_connection)}')
         client.shutdown(socket.SHUT_RDRW)
         client.close()
         del connected_clients[client]
