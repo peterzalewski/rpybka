@@ -1,5 +1,54 @@
+import re
 import select
 import socket
+
+
+REQUEST_LINE_FORMAT = re.compile(
+  r"""
+  (?P<verb>GET|HEAD|POST|PUT|DELETE|DELETE|CONNECT|OPTIONS|TRACE)
+  [ ]
+  (?P<url>\S+)
+  [ ]
+  HTTP/(?P<version>1\.[01])
+  \r\n
+  (?P<headers>
+    (?:
+      [-a-zA-Z]+:.+\r\n
+    )*?
+  )
+  \r\n
+  """,
+  flags=re.VERBOSE,
+)
+
+HEADER_FORMAT = re.compile(
+  r"""
+  (?P<field_name>[-a-zA-Z]+)
+  :
+  [ \t]*
+  (?P<field_value>[\x21-\x7E]+)  # All visible US-ASCII characters
+  [ \t]*
+  \r\n
+  """,
+  flags=re.VERBOSE,
+)
+
+def parse_headers(headers):
+  return {
+    header.group('field_name'): header.group('field_value')
+    for header in HEADER_FORMAT.finditer(headers)
+  }
+
+
+def handle_request(data):
+  ascii_request = b''.join(data).decode(encoding="us-ascii")
+  for request in REQUEST_LINE_FORMAT.finditer(ascii_request):
+    print(dict(
+      verb=request['verb'],
+      url=request['url'],
+      version=request['version'],
+      headers=parse_headers(request['headers']),
+    ))
 
 
 def pretty_print_socket(connection):
@@ -30,7 +79,7 @@ def run(port=80):
           data = client.recv(4096)
           if data:
             connected_clients[client].append(data)
-            print(f'received data from {pretty_print_socket(new_connection)}: {data!s}')
+            handle_request(connected_clients[client])
 
       for client in unusual:
         print(f'closed connection to {pretty_print_socket(new_connection)}')
