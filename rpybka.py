@@ -1,6 +1,6 @@
 import re
 import select
-import socket
+import socket as lib_socket
 
 
 REQUEST_LINE_FORMAT = re.compile(
@@ -40,8 +40,8 @@ def parse_headers(headers):
   }
 
 
-def handle_request(data):
-  ascii_request = b''.join(data).decode(encoding="us-ascii")
+def handle_request(client):
+  ascii_request = client.incoming
   for request in REQUEST_LINE_FORMAT.finditer(ascii_request):
     print(dict(
       verb=request['verb'],
@@ -49,43 +49,77 @@ def handle_request(data):
       version=request['version'],
       headers=parse_headers(request['headers']),
     ))
+    client.send('HTTP/1.1 200 OK\r\nConnection: Close\r\n\r\n')
 
 
-def pretty_print_socket(connection):
-  assert(connection)
-  ip_address, port = connection.getpeername()
-  return f'<{ip_address}:{port}>'
+class ConnectedClient(object):
+  def __init__(self, socket, address):
+    super().__init__()
+    self.socket = socket
+    self.address, self.port = address
+    self.incoming = ''
+    self._outgoing = bytearray()
+
+  def receive(self, data):
+    ascii_data = data.decode(encoding="us-ascii")
+    self.incoming += ascii_data
+
+  def send(self, data):
+    ascii_data = data.encode(encoding="us-ascii")
+    self._outgoing += ascii_data
+
+  def ready_to_send(self):
+    return len(self._outgoing) > 0
+
+  def __repr__(self):
+    return f'<{self.address}:{self.port}>'
 
 
 def run(port=80):
   connected_clients = {}
 
-  with socket.socket(family=socket.AF_INET, type=socket.SOCK_STREAM) as server:
-    server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+  with lib_socket.socket(family=lib_socket.AF_INET, type=lib_socket.SOCK_STREAM) as server:
+    server.setsockopt(lib_socket.SOL_SOCKET, lib_socket.SO_REUSEADDR, 1)
     server.bind(('', port))
-    server.listen()
+    server.listen(0xffff)
 
     while True:
-      read_ready = [server] + list(connected_clients.keys())
-      readable, _, unusual = select.select(read_ready, [], read_ready, 1)
+      # TODO: Rewrite with kqueue
+      connected_sockets = set([server] + list(connected_clients.keys()))
+      readable, writable, unusual = select.select(connected_sockets, connected_sockets, connected_sockets, 1)
 
-      for client in readable:
-        if client is server:
+      for socket in readable:
+        if socket is server:
           new_connection, address = server.accept()
           new_connection.setblocking(False)
-          connected_clients[new_connection] = []
-          print(f'client connected from {pretty_print_socket(new_connection)}')
+          connected_clients[new_connection] = ConnectedClient(new_connection, address)
+          print(f'client connected from {connected_clients[new_connection]!r}')
         else:
-          data = client.recv(4096)
+          data = socket.recv(4096)
           if data:
-            connected_clients[client].append(data)
-            handle_request(connected_clients[client])
+            connected_clients[socket].receive(data)
+            # TODO: This naively loops over every request from the same socket.
+            handle_request(connected_clients[socket])
 
-      for client in unusual:
-        print(f'closed connection to {pretty_print_socket(new_connection)}')
-        client.shutdown(socket.SHUT_RDRW)
-        client.close()
-        del connected_clients[client]
+      for socket in writable:
+        if socket is server:
+          continue
+        client = connected_clients[socket]
+        if client.ready_to_send():
+          send_start = 0
+          while send_start < len(client._outgoing):
+            send_size = min(4096, len(client._outgoing) - send_start)
+            socket.sendmsg([client._outgoing[send_start:send_start + send_size]])
+            send_start += send_size
+          del client._outgoing[:send_start]
+        socket.close()
+        del connected_clients[socket]
+
+      for socket in unusual:
+        print(f'closed connection to {connected_clients[socket]!r}')
+        socket.shutdown(lib_socket.SHUT_RDRW)
+        socket.close()
+        del connected_clients[socket]
   
 
 if __name__ == '__main__':
