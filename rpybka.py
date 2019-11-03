@@ -40,36 +40,56 @@ def parse_headers(headers):
   }
 
 
-def handle_request(client):
-  ascii_request = client.incoming
-  for request in REQUEST_LINE_FORMAT.finditer(ascii_request):
-    print(dict(
-      verb=request['verb'],
-      url=request['url'],
-      version=request['version'],
-      headers=parse_headers(request['headers']),
-    ))
-    client.send('HTTP/1.1 200 OK\r\nConnection: Close\r\n\r\n')
-
-
-class ConnectedClient(object):
+class HTTPClient(object):
+  """
+  A connected TCP socket that abstracts bytes into HTTP requests and vice-versa.
+  HTTPClient manages sending and receiving over its socket; accepting and
+  closing the socket happens at a higher level.
+  """
   def __init__(self, socket, address):
     super().__init__()
     self.socket = socket
     self.address, self.port = address
-    self.incoming = ''
+    self._incoming = bytearray()
     self._outgoing = bytearray()
 
-  def receive(self, data):
-    ascii_data = data.decode(encoding="us-ascii")
-    self.incoming += ascii_data
+  def receive(self):
+    data = self.socket.recv(4096)
+    if not data:
+      return False
 
-  def send(self, data):
+    self._incoming += data
+
+  def requests_iter(self):
+    ascii_request = self._incoming.decode(encoding='us-ascii')
+    for request in REQUEST_LINE_FORMAT.finditer(ascii_request):
+      self.queue_response('HTTP/1.1 200 OK\r\nConnection: Close\r\n\r\n')
+      del self._incoming[request.start():request.end()]
+      yield dict(
+          verb=request['verb'],
+          url=request['url'],
+          version=request['version'],
+          headers=parse_headers(request['headers']),
+      )
+
+  def queue_response(self, data):
     ascii_data = data.encode(encoding="us-ascii")
     self._outgoing += ascii_data
 
+  def flush(self):
+    send_start = 0
+    while send_start < len(self._outgoing):
+      send_size = min(4096, len(self._outgoing) - send_start)
+      self.socket.sendmsg([self._outgoing[send_start:send_start + send_size]])
+      send_start += send_size
+    del self._outgoing[:send_start]
+
   def ready_to_send(self):
     return len(self._outgoing) > 0
+
+  def close(self):
+    self.socket.shutdown(lib_socket.SHUT_RDWR)
+    self.socket.close()
 
   def __repr__(self):
     return f'<{self.address}:{self.port}>'
@@ -92,33 +112,25 @@ def run(port=80):
         if socket is server:
           new_connection, address = server.accept()
           new_connection.setblocking(False)
-          connected_clients[new_connection] = ConnectedClient(new_connection, address)
+          connected_clients[new_connection] = HTTPClient(new_connection, address)
           print(f'client connected from {connected_clients[new_connection]!r}')
         else:
-          data = socket.recv(4096)
-          if data:
-            connected_clients[socket].receive(data)
-            # TODO: This naively loops over every request from the same socket.
-            handle_request(connected_clients[socket])
+          connected_clients[socket].receive()
+          for request in connected_clients[socket].requests_iter():
+            print(request)
 
       for socket in writable:
         if socket is server:
           continue
         client = connected_clients[socket]
         if client.ready_to_send():
-          send_start = 0
-          while send_start < len(client._outgoing):
-            send_size = min(4096, len(client._outgoing) - send_start)
-            socket.sendmsg([client._outgoing[send_start:send_start + send_size]])
-            send_start += send_size
-          del client._outgoing[:send_start]
-        socket.close()
+          client.flush()
+        client.close()
         del connected_clients[socket]
 
       for socket in unusual:
         print(f'closed connection to {connected_clients[socket]!r}')
-        socket.shutdown(lib_socket.SHUT_RDRW)
-        socket.close()
+        connected_clients[socket].close()
         del connected_clients[socket]
   
 
